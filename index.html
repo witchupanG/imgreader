@@ -169,6 +169,15 @@
     display:none;
   }
   #toast.show{display:block}
+  #subbar{
+    position:fixed; left:50%; bottom:18px; transform:translateX(-50%); z-index:69;
+    display:none; align-items:center; gap:10px; padding:8px 10px 8px 14px;
+    background:var(--panel); border:1px solid var(--accent); border-radius:10px;
+    box-shadow:0 6px 24px rgba(0,0,0,.35); max-width:92vw;
+  }
+  #subbar.show{display:flex}
+  #subtxt{color:var(--fg); font-size:13px}
+  #bSubGo{border-color:var(--accent); color:var(--accent)}
   @media (max-width:820px){
     #main{padding-left:0}
     #side{width:220px}
@@ -230,12 +239,18 @@
     <kbd>J</kbd>/<kbd>K</kbd> หรือ <kbd>N</kbd>/<kbd>P</kbd> ภาพถัดไป/ก่อนหน้า ·
     <kbd>Home</kbd>/<kbd>End</kbd> ต้น/ท้าย ·
     <kbd>S</kbd> รายชื่อไฟล์ · <kbd>C</kbd> ชื่อไฟล์ · <kbd>T</kbd> ธีม ·
-    <kbd>H</kbd> ซ่อน UI · <kbd>F</kbd> เต็มจอ
+    <kbd>H</kbd> ซ่อน UI · <kbd>F</kbd> เต็มจอ<br>
+    <span style="opacity:.7">(คีย์ลัดใช้ได้ทั้งตอนแป้นเป็นไทยและอังกฤษ — อ่านจากตำแหน่งปุ่ม ไม่ใช่ตัวอักษร)</span>
   </p>
 </div>
 
 <div id="busy">กำลังอ่านโฟลเดอร์…</div>
 <div id="toast"></div>
+<div id="subbar">
+  <span id="subtxt"></span>
+  <button id="bSubGo">🗂️ รวมโฟลเดอร์ย่อยด้วย</button>
+  <button id="bSubNo" title="ไม่ต้อง">✕</button>
+</div>
 
 <script>
 "use strict";
@@ -264,11 +279,15 @@ const MODES = ['w','orig','h'];
 // ช่วง % ของสไลเดอร์ แยกตามโหมด: [min, max, step]
 // โหมด "พอดี" ห้ามเกิน 100% (เกินแล้วมันไม่พอดีอีกต่อไป) · จะซูมเกินจอให้ใช้โหมดขนาดจริง
 const RANGE = {w:[20,100,5], orig:[10,400,10], h:[20,100,5]};
-const CFG = Object.assign({mode:'w', zoom:{w:100, orig:100, h:100}, theme:'dark', cap:1, side:0, sub:1}, load());
+// ⚠ LSKEY/load/save ต้องอยู่ "ก่อน" บรรทัดที่สร้าง CFG
+// เคยวางไว้ทีหลัง -> ตอน load() ถูกเรียก LSKEY ยังอยู่ใน TDZ -> ReferenceError ที่ถูก catch กลืน
+// -> คืน {} -> ได้ค่า default ทุกครั้ง แล้ว applyCfg() ก็ save ค่า default ทับของจริง
+// (อาการ: ตั้งค่าอะไรไว้ก็หายหมดหลัง refresh)
 // v2 = ทิ้งค่าเก่าที่เก็บ % ปนกันทุกโหมด (เคยทำให้ "ขนาดจริง" ไม่ใช่ 1:1)
 const LSKEY = 'imgreader.v2';
 function load(){ try{ return JSON.parse(localStorage.getItem(LSKEY)||'{}'); }catch(e){ return {}; } }
 function save(){ localStorage.setItem(LSKEY, JSON.stringify(CFG)); }
+const CFG = Object.assign({mode:'w', zoom:{w:100, orig:100, h:100}, theme:'dark', cap:1, side:0, sub:1}, load());
 
 // zoom เก็บแยกตามโหมด -> สลับโหมดแล้ว % เปลี่ยนตามโหมดนั้น ๆ (ค่าเริ่มต้น 100 ทุกโหมด)
 if(typeof CFG.zoom !== 'object' || !CFG.zoom) CFG.zoom = {w:100, orig:100, h:100};
@@ -335,18 +354,23 @@ function fromInput(fileList, deep){
 const rec = (f, path) => ({file:f, path, size:f.size, mtime:f.lastModified});
 
 // อ่านโฟลเดอร์จาก FileSystemDirectoryHandle (ได้ handle ไว้เขียนไฟล์กลับด้วย)
-// deep=false -> อ่านเฉพาะไฟล์ชั้นบนสุด ไม่ไล่เข้าโฟลเดอร์ย่อย (เร็วกว่ามากถ้าโฟลเดอร์ลึก)
-async function fromDirHandle(dh, base, deep){
-  const out = [];
+// อ่านชั้นเดียว: คืนทั้งไฟล์ภาพและรายชื่อโฟลเดอร์ย่อย (ไว้ถามผู้ใช้ว่าจะรวมไหม)
+async function readTop(dh, base){
+  const files = [], dirs = [];
   for await (const [name, h] of dh.entries()){
     if(h.kind === 'file'){
       if(!EXT.test(name)) continue;
-      try{ out.push(rec(await h.getFile(), base + name)); }catch(e){ /* ข้ามไฟล์ที่เปิดไม่ได้ */ }
-    }else if(deep){
-      out.push(...await fromDirHandle(h, base + name + '/', deep));
-    }
+      try{ files.push(rec(await h.getFile(), base + name)); }catch(e){ /* ข้ามไฟล์ที่เปิดไม่ได้ */ }
+    }else dirs.push([name, h]);
   }
-  return out;
+  return {files, dirs};
+}
+
+// deep=false -> อ่านเฉพาะไฟล์ชั้นบนสุด ไม่ไล่เข้าโฟลเดอร์ย่อย (เร็วกว่ามากถ้าโฟลเดอร์ลึก)
+async function fromDirHandle(dh, base, deep){
+  const {files, dirs} = await readTop(dh, base);
+  if(deep) for(const [name, h] of dirs) files.push(...await fromDirHandle(h, base + name + '/', true));
+  return files;
 }
 
 // ลาก-วางแล้วอ่านลึกหรือไม่ (ใช้บอก openList ว่า rawList ครบทั้งต้นไม้ไหม)
@@ -364,10 +388,8 @@ async function fromDrop(dt){
   }
   // ถ้าลากมาโฟลเดอร์เดียวและเบราว์เซอร์ให้ handle มา -> ใช้ handle (เขียน index.html กลับได้)
   const handles = (await Promise.all(handleP)).filter(h => h && h.kind === 'directory');
-  if(handles.length === 1){
-    dirHandle = handles[0]; rootPrefixed = false; dropDeep = !!CFG.sub;
-    return fromDirHandle(dirHandle, '', dropDeep);
-  }
+  // ได้ handle -> คืน null ให้ตัวเรียกไปใช้ openHandle() (มีขั้นตอนถาม "รวมย่อยไหม")
+  if(handles.length === 1){ dirHandle = handles[0]; rootPrefixed = false; return null; }
   dirHandle = null; dropDeep = !!CFG.sub;
   if(!roots.length){ // fallback: ลากไฟล์ภาพมาตรง ๆ (ไม่ใช่โฟลเดอร์)
     rootPrefixed = false;
@@ -616,6 +638,8 @@ window.addEventListener('pointercancel', endPan);
 // rawList = ทุกไฟล์ที่อ่านมาได้ · rawDeep = rawList รวมโฟลเดอร์ย่อยไว้แล้วหรือยัง
 // เก็บดิบไว้ -> สลับ "รวมโฟลเดอร์ย่อย" ได้ทันทีโดยไม่ต้องเลือกโฟลเดอร์ใหม่
 let rawList = [], rawDeep = true, srcLabel = '';
+// โฟลเดอร์ย่อยที่ "ยังไม่ได้อ่าน" (ตอนเปิดแบบชั้นเดียว) + จำนวนภาพที่รู้ว่าถูกซ่อนอยู่
+let pendingDirs = [], extraHidden = 0, barDismissed = false;
 
 // เอาเฉพาะไฟล์ชั้นบนสุดเมื่อปิดตัวเลือกรวมโฟลเดอร์ย่อย
 // (path จาก input/ลากโฟลเดอร์ มีชื่อโฟลเดอร์รากนำหน้า -> ชั้นบนสุด = มี "/" 1 ตัว)
@@ -626,7 +650,7 @@ function applyDepth(list){
 }
 
 async function openList(list, label, deep){
-  rawList = list; rawDeep = deep !== false; srcLabel = label || '';
+  rawList = list; rawDeep = deep !== false; srcLabel = label || ''; barDismissed = false;
   showList();
 }
 
@@ -635,6 +659,7 @@ function showList(){
   if(!shown.length){
     busy(false);
     toast(rawList.length ? 'ชั้นบนสุดไม่มีไฟล์ภาพ — ลองเปิด "รวมโฟลเดอร์ย่อย"' : 'ไม่พบไฟล์ภาพในโฟลเดอร์นี้');
+    subBar();
     return;
   }
   busy(true, 'กำลังจัดเรียง ' + shown.length + ' ภาพ…');
@@ -643,13 +668,30 @@ function showList(){
   busy(false);
   toast((srcLabel ? srcLabel + ' · ' : '') + shown.length + ' ภาพ' +
         (CFG.sub ? '' : ' (เฉพาะชั้นบนสุด)'));
+  subBar();
 }
+
+// แถบชวน "รวมโฟลเดอร์ย่อย" — โผล่เฉพาะตอนปิดย่อยไว้ แต่โฟลเดอร์นี้มีของอยู่ข้างล่างจริง ๆ
+function subBar(){
+  const hidden = CFG.sub ? 0 : (rawList.length - applyDepth(rawList).length) + extraHidden;
+  const show = !CFG.sub && !barDismissed && (hidden > 0 || pendingDirs.length > 0);
+  $('#subbar').classList.toggle('show', show);
+  if(!show) return;
+  $('#subtxt').textContent = hidden > 0
+    ? 'ยังมีภาพในโฟลเดอร์ย่อยอีก ' + hidden + ' ภาพที่ไม่ได้แสดง'
+    : 'โฟลเดอร์นี้มีโฟลเดอร์ย่อยอีก ' + pendingDirs.length + ' อัน';
+}
+$('#bSubNo').onclick = () => { barDismissed = true; $('#subbar').classList.remove('show'); };
+$('#bSubGo').onclick = () => $('#bSub').click();
 
 $('#pick').addEventListener('change', async e => {
   busy(true);
-  dirHandle = null; rootPrefixed = true;
+  dirHandle = null; rootPrefixed = true; pendingDirs = [];
   const deep = !!CFG.sub;
+  let total = 0;
+  for(const f of e.target.files) if(EXT.test(f.name)) total++;
   const list = fromInput(e.target.files, deep);
+  extraHidden = total - list.length;          // ภาพในโฟลเดอร์ย่อยที่ตัดทิ้งไป (ไว้ขึ้นแถบชวน)
   const root = e.target.files.length ? (e.target.files[0].webkitRelativePath||'').split('/')[0] : '';
   await openList(list, root, deep);
   e.target.value = '';
@@ -661,13 +703,13 @@ $('#pick').addEventListener('change', async e => {
 $('#bSub').onclick = async () => {
   CFG.sub = CFG.sub ? 0 : 1;
   applyCfg();
-  if(!rawList.length) return;
+  if(!rawList.length){ subBar(); return; }
   if(CFG.sub && !rawDeep){
-    if(!dirHandle){ toast('กด 📂 เปิดโฟลเดอร์อีกครั้งเพื่ออ่านโฟลเดอร์ย่อย'); return; }
+    if(!dirHandle){ toast('กด 📂 เปิดโฟลเดอร์อีกครั้งเพื่ออ่านโฟลเดอร์ย่อย', 3000); return; }
     busy(true, 'กำลังอ่านโฟลเดอร์ย่อย…');
     try{
       rawList = await fromDirHandle(dirHandle, '', true);
-      rawDeep = true;
+      rawDeep = true; pendingDirs = []; extraHidden = 0;
     }catch(err){ busy(false); toast('อ่านโฟลเดอร์ย่อยไม่ได้: ' + err.message); return; }
   }
   showList();
@@ -675,15 +717,34 @@ $('#bSub').onclick = async () => {
 
 // เปิดโฟลเดอร์: ขอ directory handle ก่อน (เขียน index.html กลับลงโฟลเดอร์นั้นได้เลย)
 // ถ้าเบราว์เซอร์ไม่รองรับบนหน้า file:// ค่อยตกไปใช้ <input webkitdirectory> แบบเดิม
+// เปิดจาก handle: โหมดชั้นเดียวจะอ่านแค่ชั้นบน (เร็ว) แล้วค่อยเสนอให้รวมย่อยทีหลัง
+async function openHandle(dh){
+  busy(true, 'กำลังอ่านโฟลเดอร์ ' + dh.name + '…');
+  dirHandle = dh; rootPrefixed = false; pendingDirs = []; extraHidden = 0;
+
+  if(CFG.sub){
+    await openList(await fromDirHandle(dh, '', true), dh.name, true);
+    return;
+  }
+  const {files, dirs} = await readTop(dh, '');
+  if(!files.length && dirs.length){
+    // ชั้นบนไม่มีภาพเลย -> เปิดมาโล่ง ๆ ไม่มีประโยชน์ ลงไปอ่านย่อยให้เลย
+    toast('ชั้นบนสุดไม่มีไฟล์ภาพ — เปิด "รวมโฟลเดอร์ย่อย" ให้อัตโนมัติ', 3500);
+    busy(true, 'กำลังอ่านโฟลเดอร์ย่อย…');
+    const all = await fromDirHandle(dh, '', true);
+    CFG.sub = 1; applyCfg();
+    await openList(all, dh.name, true);
+    return;
+  }
+  pendingDirs = dirs;
+  await openList(files, dh.name, false);
+}
+
 async function openFolder(){
   if(window.showDirectoryPicker){
     try{
       const dh = await window.showDirectoryPicker({id:'imgreader', mode:'readwrite'});
-      busy(true, 'กำลังอ่านโฟลเดอร์ ' + dh.name + '…');
-      const deep = !!CFG.sub;
-      const list = await fromDirHandle(dh, '', deep);
-      dirHandle = dh; rootPrefixed = false;
-      await openList(list, dh.name, deep);
+      await openHandle(dh);
       return;
     }catch(err){
       busy(false);
@@ -704,7 +765,8 @@ window.addEventListener('drop', async e => {
   busy(true);
   try{
     const list = await fromDrop(e.dataTransfer);
-    await openList(list, dirHandle ? dirHandle.name : '', dropDeep);
+    if(list === null) await openHandle(dirHandle);
+    else { pendingDirs = []; extraHidden = 0; await openList(list, '', dropDeep); }
   }
   catch(err){ busy(false); toast('อ่านโฟลเดอร์ไม่ได้: ' + err.message); }
 });
@@ -807,10 +869,21 @@ $('#bSide').onclick  = () => { CFG.side = CFG.side?0:1; reflow(); };
 $('#bTheme').onclick = () => { CFG.theme = CFG.theme==='dark'?'light':'dark'; applyCfg(); };
 $('#bHide').onclick  = () => { document.body.classList.toggle('hideui'); reflow(); };
 
+// ใช้ e.code (ตำแหน่งปุ่มจริงบนแป้น) ไม่ใช่ e.key (ตัวอักษรที่พิมพ์ออก)
+// -> คีย์ลัดใช้ได้เหมือนกันหมดไม่ว่าจะสลับแป้นเป็นไทยหรืออังกฤษ
+function hotkey(e){
+  const c = e.code || '';
+  if(/^Key[A-Z]$/.test(c)) return c.slice(3).toLowerCase();
+  if(/^(Digit|Numpad)\d$/.test(c)) return c.replace(/^(Digit|Numpad)/, '');
+  if(c === 'Minus' || c === 'NumpadSubtract') return '-';
+  if(c === 'Equal' || c === 'NumpadAdd')      return '+';
+  return (e.key || '').toLowerCase();          // Home / End / ลูกศร ฯลฯ
+}
+
 document.addEventListener('keydown', e => {
   if(e.ctrlKey || e.altKey || e.metaKey) return;
   if(/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
-  const k = e.key.toLowerCase();
+  const k = hotkey(e);
   if(k==='j' || k==='n'){ goto(curIdx+1); e.preventDefault(); }
   else if(k==='k' || k==='p'){ goto(curIdx-1); e.preventDefault(); }
   else if(k==='home'){ goto(0); e.preventDefault(); }
@@ -820,8 +893,8 @@ document.addEventListener('keydown', e => {
   else if(k==='t'){ CFG.theme = CFG.theme==='dark'?'light':'dark'; applyCfg(); }
   else if(k==='h'){ document.body.classList.toggle('hideui'); reflow(); }
   else if(k==='f'){ document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen(); }
-  else if(k==='+' || k==='='){ stepZ(1); }
-  else if(k==='-' || k==='_'){ stepZ(-1); }
+  else if(k==='+'){ stepZ(1); }
+  else if(k==='-'){ stepZ(-1); }
   else if(k==='0'){ CFG.zoom[CFG.mode] = 100; reflow(); }
   else if(k==='1' || k==='2' || k==='3'){ CFG.mode = MODES[+k-1]; reflow(); }
   else if(k==='m'){ CFG.mode = MODES[(MODES.indexOf(CFG.mode)+1) % MODES.length]; reflow(); }
