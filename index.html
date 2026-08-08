@@ -197,6 +197,7 @@
     <span id="wlab"></span>
     <button id="bReset" title="รีเซ็ตกลับ 100% (0)">⟲ 100%</button>
   </span>
+  <button id="bSub" title="รวมภาพในโฟลเดอร์ย่อยด้วยหรือไม่ (B)">🗂️ ย่อย</button>
   <select id="sort" title="การเรียง">
     <option value="name">เรียงชื่อ (natural)</option>
     <option value="name-d">เรียงชื่อ ย้อนกลับ</option>
@@ -219,7 +220,8 @@
   <p>อ่านภาพทั้งโฟลเดอร์แบบเลื่อนต่อเนื่องจากบนลงล่าง มีชื่อไฟล์คั่นระหว่างภาพ</p>
   <button class="big" id="bPick">📂 เลือกโฟลเดอร์</button>
   <p>หรือ <b>ลากโฟลเดอร์ (หรือไฟล์ภาพ) มาวางตรงนี้</b> ก็ได้<br>
-  รองรับโฟลเดอร์ย่อย · jpg / png / gif / webp / avif / bmp<br>
+  ปุ่ม <b>🗂️ ย่อย</b> บนแถบบน = เลือกว่าจะรวมภาพในโฟลเดอร์ย่อยด้วยหรือเอาแค่ชั้นบนสุด ·
+  jpg / png / gif / webp / avif / bmp<br>
   เปิดแล้วกด <b>💾 สร้าง HTML</b> จะเขียนไฟล์ <b>index.html</b> ลงในโฟลเดอร์นั้นให้เลย
   ครั้งต่อไปดับเบิลคลิกไฟล์นั้นอ่านได้ทันที ไม่ต้องเลือกโฟลเดอร์อีก</p>
   <p style="font-size:12.5px">
@@ -262,7 +264,7 @@ const MODES = ['w','orig','h'];
 // ช่วง % ของสไลเดอร์ แยกตามโหมด: [min, max, step]
 // โหมด "พอดี" ห้ามเกิน 100% (เกินแล้วมันไม่พอดีอีกต่อไป) · จะซูมเกินจอให้ใช้โหมดขนาดจริง
 const RANGE = {w:[20,100,5], orig:[10,400,10], h:[20,100,5]};
-const CFG = Object.assign({mode:'w', zoom:{w:100, orig:100, h:100}, theme:'dark', cap:1, side:0}, load());
+const CFG = Object.assign({mode:'w', zoom:{w:100, orig:100, h:100}, theme:'dark', cap:1, side:0, sub:1}, load());
 // v2 = ทิ้งค่าเก่าที่เก็บ % ปนกันทุกโหมด (เคยทำให้ "ขนาดจริง" ไม่ใช่ 1:1)
 const LSKEY = 'imgreader.v2';
 function load(){ try{ return JSON.parse(localStorage.getItem(LSKEY)||'{}'); }catch(e){ return {}; } }
@@ -299,6 +301,8 @@ function applyCfg(){
   document.body.classList.toggle('noside', !CFG.side);
   $('#bCap').classList.toggle('on', !!CFG.cap);
   $('#bSide').classList.toggle('on', !!CFG.side);
+  $('#bSub').classList.toggle('on', !!CFG.sub);
+  $('#bSub').textContent = CFG.sub ? '🗂️ ย่อย' : '📁 ชั้นเดียว';
   save();
 }
 
@@ -328,18 +332,22 @@ function fromInput(fileList){
 const rec = (f, path) => ({file:f, path, size:f.size, mtime:f.lastModified});
 
 // อ่านโฟลเดอร์จาก FileSystemDirectoryHandle (ได้ handle ไว้เขียนไฟล์กลับด้วย)
-async function fromDirHandle(dh, base){
+// deep=false -> อ่านเฉพาะไฟล์ชั้นบนสุด ไม่ไล่เข้าโฟลเดอร์ย่อย (เร็วกว่ามากถ้าโฟลเดอร์ลึก)
+async function fromDirHandle(dh, base, deep){
   const out = [];
   for await (const [name, h] of dh.entries()){
     if(h.kind === 'file'){
       if(!EXT.test(name)) continue;
       try{ out.push(rec(await h.getFile(), base + name)); }catch(e){ /* ข้ามไฟล์ที่เปิดไม่ได้ */ }
-    }else{
-      out.push(...await fromDirHandle(h, base + name + '/'));
+    }else if(deep){
+      out.push(...await fromDirHandle(h, base + name + '/', deep));
     }
   }
   return out;
 }
+
+// ลาก-วางแล้วอ่านลึกหรือไม่ (ใช้บอก openList ว่า rawList ครบทั้งต้นไม้ไหม)
+let dropDeep = true;
 
 // from drag&drop (walk directory entries)
 async function fromDrop(dt){
@@ -354,13 +362,15 @@ async function fromDrop(dt){
   // ถ้าลากมาโฟลเดอร์เดียวและเบราว์เซอร์ให้ handle มา -> ใช้ handle (เขียน index.html กลับได้)
   const handles = (await Promise.all(handleP)).filter(h => h && h.kind === 'directory');
   if(handles.length === 1){
-    dirHandle = handles[0]; rootPrefixed = false;
-    return fromDirHandle(dirHandle, '');
+    dirHandle = handles[0]; rootPrefixed = false; dropDeep = !!CFG.sub;
+    return fromDirHandle(dirHandle, '', dropDeep);
   }
-  dirHandle = null; rootPrefixed = true;
-  if(!roots.length){ // fallback: plain files
+  dirHandle = null; dropDeep = true;      // ทางนี้อ่านทั้งต้นไม้เสมอ แล้วค่อยกรองทีหลัง
+  if(!roots.length){ // fallback: ลากไฟล์ภาพมาตรง ๆ (ไม่ใช่โฟลเดอร์)
+    rootPrefixed = false;
     return [...dt.files].filter(f=>EXT.test(f.name)).map(f=>rec(f, f.name));
   }
+  rootPrefixed = true;
   const out=[];
   const readDir = dr => new Promise(res=>{
     const acc=[]; const step=()=>dr.readEntries(b=>{ if(!b.length) return res(acc); acc.push(...b); step(); }, ()=>res(acc));
@@ -598,25 +608,62 @@ window.addEventListener('pointerup', endPan);
 window.addEventListener('pointercancel', endPan);
 
 /* ---------------- open ---------------- */
-let lastList = [];
-async function openList(list, label){
-  if(!list.length){ toast('ไม่พบไฟล์ภาพในโฟลเดอร์นี้'); busy(false); return; }
-  lastList = list;
-  busy(true, 'กำลังจัดเรียง ' + list.length + ' ภาพ…');
-  sortItems(list);
-  build(list);
+// rawList = ทุกไฟล์ที่อ่านมาได้ · rawDeep = rawList รวมโฟลเดอร์ย่อยไว้แล้วหรือยัง
+// เก็บดิบไว้ -> สลับ "รวมโฟลเดอร์ย่อย" ได้ทันทีโดยไม่ต้องเลือกโฟลเดอร์ใหม่
+let rawList = [], rawDeep = true, srcLabel = '';
+
+// เอาเฉพาะไฟล์ชั้นบนสุดเมื่อปิดตัวเลือกรวมโฟลเดอร์ย่อย
+// (path จาก input/ลากโฟลเดอร์ มีชื่อโฟลเดอร์รากนำหน้า -> ชั้นบนสุด = มี "/" 1 ตัว)
+function applyDepth(list){
+  if(CFG.sub) return list.slice();
+  const base = rootPrefixed ? 1 : 0;
+  return list.filter(r => (r.path.match(/\//g) || []).length === base);
+}
+
+async function openList(list, label, deep){
+  rawList = list; rawDeep = deep !== false; srcLabel = label || '';
+  showList();
+}
+
+function showList(){
+  const shown = applyDepth(rawList);
+  if(!shown.length){
+    busy(false);
+    toast(rawList.length ? 'ชั้นบนสุดไม่มีไฟล์ภาพ — ลองเปิด "รวมโฟลเดอร์ย่อย"' : 'ไม่พบไฟล์ภาพในโฟลเดอร์นี้');
+    return;
+  }
+  busy(true, 'กำลังจัดเรียง ' + shown.length + ' ภาพ…');
+  sortItems(shown);
+  build(shown);
   busy(false);
-  toast((label ? label + ' · ' : '') + list.length + ' ภาพ');
+  toast((srcLabel ? srcLabel + ' · ' : '') + shown.length + ' ภาพ' +
+        (CFG.sub ? '' : ' (เฉพาะชั้นบนสุด)'));
 }
 
 $('#pick').addEventListener('change', async e => {
   busy(true);
   dirHandle = null; rootPrefixed = true;
-  const list = fromInput(e.target.files);
+  const list = fromInput(e.target.files);      // input คืนมาทั้งต้นไม้เสมอ -> deep = true
   const root = e.target.files.length ? (e.target.files[0].webkitRelativePath||'').split('/')[0] : '';
-  await openList(list, root);
+  await openList(list, root, true);
   e.target.value = '';
 });
+
+// สลับ "รวมโฟลเดอร์ย่อย" — ถ้าเปิดขึ้นมาแล้วของเดิมยังไม่ได้อ่านลึก ให้อ่านเพิ่มจาก handle
+$('#bSub').onclick = async () => {
+  CFG.sub = CFG.sub ? 0 : 1;
+  applyCfg();
+  if(!rawList.length) return;
+  if(CFG.sub && !rawDeep){
+    if(!dirHandle){ toast('กด 📂 เปิดโฟลเดอร์อีกครั้งเพื่ออ่านโฟลเดอร์ย่อย'); return; }
+    busy(true, 'กำลังอ่านโฟลเดอร์ย่อย…');
+    try{
+      rawList = await fromDirHandle(dirHandle, '', true);
+      rawDeep = true;
+    }catch(err){ busy(false); toast('อ่านโฟลเดอร์ย่อยไม่ได้: ' + err.message); return; }
+  }
+  showList();
+};
 
 // เปิดโฟลเดอร์: ขอ directory handle ก่อน (เขียน index.html กลับลงโฟลเดอร์นั้นได้เลย)
 // ถ้าเบราว์เซอร์ไม่รองรับบนหน้า file:// ค่อยตกไปใช้ <input webkitdirectory> แบบเดิม
@@ -625,9 +672,10 @@ async function openFolder(){
     try{
       const dh = await window.showDirectoryPicker({id:'imgreader', mode:'readwrite'});
       busy(true, 'กำลังอ่านโฟลเดอร์ ' + dh.name + '…');
-      const list = await fromDirHandle(dh, '');
+      const deep = !!CFG.sub;
+      const list = await fromDirHandle(dh, '', deep);
       dirHandle = dh; rootPrefixed = false;
-      await openList(list, dh.name);
+      await openList(list, dh.name, deep);
       return;
     }catch(err){
       busy(false);
@@ -646,7 +694,10 @@ window.addEventListener('drop', async e => {
   e.preventDefault();
   $('#drop').classList.remove('over');
   busy(true);
-  try{ await openList(await fromDrop(e.dataTransfer)); }
+  try{
+    const list = await fromDrop(e.dataTransfer);
+    await openList(list, dirHandle ? dirHandle.name : '', dropDeep);
+  }
   catch(err){ busy(false); toast('อ่านโฟลเดอร์ไม่ได้: ' + err.message); }
 });
 
@@ -742,7 +793,7 @@ async function saveHtml(html, name, where){
 }
 $('#bSave').onclick = exportHtml;
 $('#mode').addEventListener('change', e => { CFG.mode = e.target.value; reflow(); });
-$('#sort').addEventListener('change', () => { if(lastList.length) openList(lastList.slice()); });
+$('#sort').addEventListener('change', () => { if(rawList.length) showList(); });
 $('#bCap').onclick   = () => { CFG.cap = CFG.cap?0:1; reflow(); };
 $('#bSide').onclick  = () => { CFG.side = CFG.side?0:1; reflow(); };
 $('#bTheme').onclick = () => { CFG.theme = CFG.theme==='dark'?'light':'dark'; applyCfg(); };
@@ -767,6 +818,7 @@ document.addEventListener('keydown', e => {
   else if(k==='1' || k==='2' || k==='3'){ CFG.mode = MODES[+k-1]; reflow(); }
   else if(k==='m'){ CFG.mode = MODES[(MODES.indexOf(CFG.mode)+1) % MODES.length]; reflow(); }
   else if(k==='o'){ openFolder(); }
+  else if(k==='b'){ $('#bSub').click(); }
 });
 
 applyCfg();
@@ -775,8 +827,9 @@ applyCfg();
 if(STATIC){
   // ไฟล์ที่สร้างไว้ในโฟลเดอร์ภาพ: อ่านรายชื่อจาก window.FILES ได้เลย ไม่ต้องเลือกโฟลเดอร์
   $('#bSave').style.display = 'none';
+  rootPrefixed = false;      // path ที่ฝังไว้เป็น relative จากตัวไฟล์อยู่แล้ว
   openList(window.FILES.map(a => ({src:encPath(a[0]), path:a[0], size:a[1]||0, mtime:a[2]||0})),
-           window.FOLDER || '');
+           window.FOLDER || '', true);
 }
 </script>
 </body>
