@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ImgReader — อ่านภาพในโฟลเดอร์แบบเลื่อนต่อเนื่อง</title>
+<style>
+  :root{
+    --bg:#14161a; --panel:#1c2027; --panel2:#232833; --line:#333a47;
+    --fg:#e6e9ef; --dim:#98a1b3; --accent:#4c9aff; --cap:#0f1216;
+    --gap:24px; --imgw:100%; --z:1; --chrome:96px;
+  }
+  /* พื้นที่ที่ไม่ใช่ภาพ (แถบบน + แถบชื่อไฟล์ + ระยะห่าง) ใช้คำนวณโหมด "พอดีความสูง" */
+  body.nocap{--chrome:62px}
+  body.hideui{--chrome:52px}
+  body.hideui.nocap{--chrome:16px}
+  html[data-theme="light"]{
+    --bg:#f2f3f5; --panel:#ffffff; --panel2:#e9ecf1; --line:#d3d8e0;
+    --fg:#1b1f27; --dim:#5d6675; --accent:#1f6feb; --cap:#e9ecf1;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;height:100%}
+  body{
+    background:var(--bg); color:var(--fg);
+    font-family:"Segoe UI","Leelawadee UI",Tahoma,sans-serif; font-size:14px;
+  }
+
+  /* ---------- top bar ---------- */
+  #bar{
+    position:fixed; top:0; left:0; right:0; height:46px; z-index:50;
+    display:flex; align-items:center; gap:10px; padding:0 12px;
+    background:var(--panel); border-bottom:1px solid var(--line);
+    transition:transform .18s ease;
+  }
+  body.hideui #bar{transform:translateY(-100%)}
+  body.hideui #side{transform:translateX(-100%)}
+  #bar .t{font-weight:600; white-space:nowrap}
+  #bar .sp{flex:1}
+  #now{
+    color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    max-width:44vw; direction:ltr;
+  }
+  button,select,label.btn{
+    background:var(--panel2); color:var(--fg); border:1px solid var(--line);
+    border-radius:6px; padding:5px 10px; cursor:pointer; font-size:13px;
+    font-family:inherit; white-space:nowrap;
+  }
+  button:hover,label.btn:hover{border-color:var(--accent)}
+  button.on{border-color:var(--accent); color:var(--accent)}
+  input[type=range]{width:110px; vertical-align:middle; accent-color:var(--accent)}
+  #wlab{color:var(--dim); min-width:70px; display:inline-block; text-align:right}
+  #wbox{display:inline-flex; align-items:center; gap:6px}
+  #wbox button{padding:2px 9px; font-size:15px; line-height:1.2; font-weight:700}
+  #wbox button:disabled{opacity:.35; cursor:default; border-color:var(--line)}
+  #bReset{font-size:12px !important; font-weight:600 !important; padding:4px 8px !important}
+  #wlab.hit{color:var(--accent)}
+
+  /* ---------- sidebar ---------- */
+  #side{
+    position:fixed; top:46px; bottom:0; left:0; width:270px; z-index:40;
+    background:var(--panel); border-right:1px solid var(--line);
+    overflow:auto; transition:transform .18s ease; padding:6px 0 40px;
+  }
+  body.noside #side{transform:translateX(-100%)}
+  #side .row{
+    padding:6px 10px; cursor:pointer; font-size:12.5px; color:var(--dim);
+    border-left:3px solid transparent; word-break:break-all; line-height:1.35;
+  }
+  #side .row:hover{background:var(--panel2); color:var(--fg)}
+  #side .row.cur{border-left-color:var(--accent); color:var(--fg); background:var(--panel2)}
+  #side .row .n{color:var(--accent); opacity:.75; margin-right:6px}
+  #side .grp{
+    padding:8px 10px 4px; font-size:11.5px; font-weight:700; color:var(--fg);
+    opacity:.65; border-top:1px solid var(--line); margin-top:4px; word-break:break-all;
+  }
+
+  /* ---------- viewer ---------- */
+  #main{padding-top:46px; padding-left:270px; transition:padding-left .18s ease}
+  body.noside #main,body.hideui #main{padding-left:0}
+  body.hideui #main{padding-top:0}
+  #list{
+    display:flex; flex-direction:column; align-items:center;
+    align-items:safe center;           /* กันภาพที่กว้างเกินจอโดนตัดหัวซ้าย */
+    gap:var(--gap); padding:var(--gap) 8px 60vh;
+  }
+  .item{width:var(--imgw)}
+  .frame{
+    position:relative; width:100%; background:var(--panel2);
+    display:flex; align-items:center; justify-content:center; min-height:60vh;
+    border-radius:4px; overflow:hidden;
+  }
+  .frame.done{min-height:0; background:transparent; border-radius:0}
+  .frame img{
+    display:block; width:100%; height:auto;
+    -webkit-user-drag:none; -webkit-user-select:none; user-select:none;
+  }
+  body.hscroll .frame img{cursor:grab}
+  body.panning{-webkit-user-select:none; user-select:none}
+  body.panning .frame img{cursor:grabbing}
+
+  /* ภาพที่กว้างเกินจอ: ให้ #list กว้างเท่าภาพที่กว้างสุด -> เอกสารเลื่อนซ้าย-ขวาได้จริง
+     ไม่โดน "centered flex overflow" กินขอบซ้ายจนเลื่อนไปดูไม่ได้
+     (ใช้เฉพาะโหมดที่ความกว้าง item เป็นค่าคงที่ ไม่ใช่ % ไม่งั้นจะวนกับ max-content) */
+  body.m-orig #list,body.m-h #list{width:max-content; min-width:100%; margin-inline:auto}
+
+  /* ---- โหมด 2: ขนาดจริง (1:1 พิกเซล × ซูม) ---- */
+  body.m-orig .item{width:max-content}
+  body.m-orig .frame{
+    min-height:0;
+    width:calc(var(--nw, 900px) * var(--z));
+    height:calc(var(--nh, 1200px) * var(--z));
+  }
+  body.m-orig .frame img{width:100%; height:100%}
+  /* ---- โหมด 3: พอดีความสูง (1 ภาพ = 1 หน้าจอ) ---- */
+  body.m-h .item{width:max-content}
+  body.m-h .frame{
+    min-height:0;
+    height:calc((100vh - var(--chrome)) * var(--z));
+    width:calc((100vh - var(--chrome)) * var(--z) * var(--ar, .7));
+  }
+  body.m-h .frame img{width:100%; height:100%}
+  /* width:0 + min-width:100% => ชื่อไฟล์ยาว ๆ ไม่ไปดัน max-content ของ .item ให้กว้างเกินภาพ */
+  body.m-orig .cap,body.m-h .cap{width:0; min-width:100%}
+  .frame .ph{color:var(--dim); font-size:12px}
+  .frame.err{min-height:120px}
+  .frame.err .ph{color:#ff6b6b}
+  .cap{
+    display:flex; align-items:center; gap:8px; margin-top:6px;
+    padding:5px 10px; background:var(--cap); border:1px solid var(--line);
+    border-radius:6px; font-size:12.5px; color:var(--dim); word-break:break-all;
+  }
+  .cap .n{color:var(--accent); font-weight:700; flex:none}
+  .cap .f{flex:1; direction:ltr}
+  .cap .meta{flex:none; opacity:.7; font-size:11.5px}
+  .cap .cp{
+    flex:none; background:none; border:none; color:var(--dim); cursor:pointer;
+    padding:2px 4px; font-size:12px;
+  }
+  .cap .cp:hover{color:var(--accent)}
+  body.nocap .cap{display:none}
+
+  /* ---------- drop / empty ---------- */
+  #drop{
+    position:fixed; inset:0; z-index:60; display:none;
+    align-items:center; justify-content:center; flex-direction:column; gap:14px;
+    background:var(--bg); text-align:center; padding:24px;
+  }
+  #drop.show{display:flex}
+  #drop h1{margin:0; font-size:22px; font-weight:700}
+  #drop p{margin:0; color:var(--dim); line-height:1.7; max-width:560px}
+  #drop.over{outline:3px dashed var(--accent); outline-offset:-18px}
+  #drop .big{
+    background:var(--accent); color:#fff; border:none; padding:11px 22px;
+    font-size:15px; border-radius:8px;
+  }
+  kbd{
+    background:var(--panel2); border:1px solid var(--line); border-bottom-width:2px;
+    border-radius:4px; padding:1px 5px; font-size:11.5px; font-family:inherit;
+  }
+  #busy{
+    position:fixed; left:50%; bottom:18px; transform:translateX(-50%); z-index:70;
+    background:var(--panel); border:1px solid var(--accent); border-radius:8px;
+    padding:8px 16px; display:none;
+  }
+  #busy.show{display:block}
+  #toast{
+    position:fixed; left:50%; bottom:18px; transform:translateX(-50%); z-index:71;
+    background:var(--accent); color:#fff; border-radius:8px; padding:7px 16px;
+    display:none;
+  }
+  #toast.show{display:block}
+  @media (max-width:820px){
+    #main{padding-left:0}
+    #side{width:220px}
+    body:not(.noside) #side{box-shadow:0 0 24px rgba(0,0,0,.5)}
+  }
+</style>
+</head>
+<body class="noside">
+
+<div id="bar">
+  <span class="t">🖼️ ImgReader</span>
+  <button id="bSide" title="รายชื่อไฟล์ (S)">☰</button>
+  <button id="bOpen" title="เลือกโฟลเดอร์ (O)">📂 เปิดโฟลเดอร์</button>
+  <input id="pick" type="file" webkitdirectory directory multiple hidden>
+  <span id="now"></span>
+  <span class="sp"></span>
+  <select id="mode" title="โหมดแสดงภาพ (1/2/3 หรือ M สลับ)">
+    <option value="w">↔ พอดีความกว้าง</option>
+    <option value="orig">1:1 ขนาดจริง</option>
+    <option value="h">↕ พอดีความสูง</option>
+  </select>
+  <span id="wbox">
+    <button id="bMinus" title="ย่อ 10% (−)">−</button>
+    <input id="w" type="range" min="20" max="300" step="5" title="ขนาดภาพ (%)" aria-label="ขนาดภาพ">
+    <button id="bPlus" title="ขยาย 10% (+)">+</button>
+    <span id="wlab"></span>
+    <button id="bReset" title="รีเซ็ตกลับ 100% (0)">⟲ 100%</button>
+  </span>
+  <select id="sort" title="การเรียง">
+    <option value="name">เรียงชื่อ (natural)</option>
+    <option value="name-d">เรียงชื่อ ย้อนกลับ</option>
+    <option value="mtime">เรียงวันที่แก้ไข</option>
+    <option value="mtime-d">วันที่แก้ไข ใหม่→เก่า</option>
+    <option value="size">เรียงขนาดไฟล์</option>
+  </select>
+  <button id="bSave" title="สร้างไฟล์ index.html สำหรับโฟลเดอร์นี้ (เปิดแล้วอ่านได้เลย ไม่ต้องเลือกโฟลเดอร์)">💾 สร้าง HTML</button>
+  <button id="bCap" title="ซ่อน/แสดงชื่อไฟล์ (C)">🏷️</button>
+  <button id="bTheme" title="สลับธีม (T)">🌓</button>
+  <button id="bHide" title="ซ่อน UI ทั้งหมด (H)">⛶</button>
+</div>
+
+<div id="side"></div>
+
+<div id="main"><div id="list"></div></div>
+
+<div id="drop" class="show">
+  <h1>🖼️ ImgReader</h1>
+  <p>อ่านภาพทั้งโฟลเดอร์แบบเลื่อนต่อเนื่องจากบนลงล่าง มีชื่อไฟล์คั่นระหว่างภาพ</p>
+  <button class="big" id="bPick">📂 เลือกโฟลเดอร์</button>
+  <p>หรือ <b>ลากโฟลเดอร์ (หรือไฟล์ภาพ) มาวางตรงนี้</b> ก็ได้<br>
+  รองรับโฟลเดอร์ย่อย · jpg / png / gif / webp / avif / bmp<br>
+  เปิดแล้วกด <b>💾 สร้าง HTML</b> จะเขียนไฟล์ <b>index.html</b> ลงในโฟลเดอร์นั้นให้เลย
+  ครั้งต่อไปดับเบิลคลิกไฟล์นั้นอ่านได้ทันที ไม่ต้องเลือกโฟลเดอร์อีก</p>
+  <p style="font-size:12.5px">
+    <kbd>1</kbd> พอดีความกว้าง · <kbd>2</kbd> ขนาดจริง 1:1 · <kbd>3</kbd> พอดีความสูง · <kbd>M</kbd> สลับโหมด<br>
+    <kbd>+</kbd>/<kbd>−</kbd> ย่อ-ขยาย · <kbd>0</kbd> รีเซ็ต 100% ·
+    <kbd>J</kbd>/<kbd>K</kbd> หรือ <kbd>N</kbd>/<kbd>P</kbd> ภาพถัดไป/ก่อนหน้า ·
+    <kbd>Home</kbd>/<kbd>End</kbd> ต้น/ท้าย ·
+    <kbd>S</kbd> รายชื่อไฟล์ · <kbd>C</kbd> ชื่อไฟล์ · <kbd>T</kbd> ธีม ·
+    <kbd>H</kbd> ซ่อน UI · <kbd>F</kbd> เต็มจอ
+  </p>
+</div>
+
+<div id="busy">กำลังอ่านโฟลเดอร์…</div>
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const EXT = /\.(jpe?g|png|gif|webp|avif|bmp|jfif|ico|svg)$/i;
+const coll = new Intl.Collator(undefined, {numeric:true, sensitivity:'base'});
+
+let items = [];      // {file|src, path, name, dir, size, url, el, frame, img, ar, loaded}
+let curIdx = -1;
+
+/* ---------------- โหมด standalone ----------------
+   ปุ่ม 💾 จะสร้างสำเนาของหน้านี้ทั้งหน้า + ฝัง window.FILES (รายชื่อไฟล์ relative)
+   ไว้ใน <head> เอาไปวางในโฟลเดอร์ภาพแล้วดับเบิลคลิก = อ่านได้เลยไม่ต้องเลือกโฟลเดอร์
+   ต้อง capture ตรงนี้ (ก่อนแตะ DOM) จะได้ได้ source สะอาด ๆ ของตัวเอง          */
+const SELF_HTML = ('<!DOCTYPE html>\n' + document.documentElement.outerHTML)
+  .replace(/<script>\/\*IMGREADER-DATA\*\/[\s\S]*?<\/script>\n?/, '');   // กันฝังซ้อนกันหลายรอบ
+const STATIC = Array.isArray(window.FILES) && window.FILES.length > 0;
+
+/* handle ของโฟลเดอร์ที่เปิดอยู่ (ถ้าได้มา) -> 💾 เขียน index.html ลงโฟลเดอร์นั้นตรง ๆ
+   ไม่ต้องผ่านกล่อง "บันทึกเป็น" ที่ชอบเด้งไปโฟลเดอร์ล่าสุดของเบราว์เซอร์
+   rootPrefixed = path มีชื่อโฟลเดอร์รากนำหน้าไหม (input/drag = มี, directory handle = ไม่มี) */
+let dirHandle = null, rootPrefixed = true;
+
+/* ---------------- settings ---------------- */
+const MODES = ['w','orig','h'];
+// ช่วง % ของสไลเดอร์ แยกตามโหมด: [min, max, step]
+// โหมด "พอดี" ห้ามเกิน 100% (เกินแล้วมันไม่พอดีอีกต่อไป) · จะซูมเกินจอให้ใช้โหมดขนาดจริง
+const RANGE = {w:[20,100,5], orig:[10,400,10], h:[20,100,5]};
+const CFG = Object.assign({mode:'w', zoom:{w:100, orig:100, h:100}, theme:'dark', cap:1, side:0}, load());
+// v2 = ทิ้งค่าเก่าที่เก็บ % ปนกันทุกโหมด (เคยทำให้ "ขนาดจริง" ไม่ใช่ 1:1)
+const LSKEY = 'imgreader.v2';
+function load(){ try{ return JSON.parse(localStorage.getItem(LSKEY)||'{}'); }catch(e){ return {}; } }
+function save(){ localStorage.setItem(LSKEY, JSON.stringify(CFG)); }
+
+// zoom เก็บแยกตามโหมด -> สลับโหมดแล้ว % เปลี่ยนตามโหมดนั้น ๆ (ค่าเริ่มต้น 100 ทุกโหมด)
+if(typeof CFG.zoom !== 'object' || !CFG.zoom) CFG.zoom = {w:100, orig:100, h:100};
+for(const m of MODES) if(typeof CFG.zoom[m] !== 'number') CFG.zoom[m] = 100;
+if(!MODES.includes(CFG.mode)) CFG.mode = 'w';
+const zoom = () => clampZ(CFG.zoom[CFG.mode] || 100);
+function clampZ(v, mode){
+  const [lo,hi] = RANGE[mode || CFG.mode];
+  return Math.max(lo, Math.min(hi, v));
+}
+
+function applyCfg(){
+  const [lo,hi,st] = RANGE[CFG.mode];
+  const z = CFG.zoom[CFG.mode] = zoom();
+  document.documentElement.dataset.theme = CFG.theme;
+  document.documentElement.style.setProperty('--imgw', z + '%');
+  document.documentElement.style.setProperty('--z', z/100);
+  const w = $('#w');
+  w.min = lo; w.max = hi; w.step = st; w.value = z;
+  w.title = {w:'ความกว้างภาพ (% ของความกว้างจอ)',
+             orig:'ซูมจากขนาดจริง (100% = 1:1 พิกเซล)',
+             h:'ความสูงภาพ (% ของความสูงจอ)'}[CFG.mode];
+  $('#wlab').textContent = z + '%' + (CFG.mode==='orig' && z===100 ? ' (1:1)' : '');
+  $('#bMinus').disabled = z <= lo;
+  $('#bPlus').disabled  = z >= hi;
+  $('#bReset').disabled = z === 100;
+  $('#mode').value = CFG.mode;
+  for(const m of MODES) document.body.classList.toggle('m-'+m, CFG.mode===m);
+  document.body.classList.toggle('nocap', !CFG.cap);
+  document.body.classList.toggle('noside', !CFG.side);
+  $('#bCap').classList.toggle('on', !!CFG.cap);
+  $('#bSide').classList.toggle('on', !!CFG.side);
+  save();
+}
+
+// เปลี่ยนโหมด/ซูมแล้ว layout ขยับ -> ตรึงภาพที่กำลังดูไว้ที่เดิม
+function reflow(){
+  const i = curIdx;
+  applyCfg();
+  if(i >= 0) requestAnimationFrame(() => goto(i));
+}
+
+/* ---------------- collecting files ---------------- */
+function busy(on, txt){ const b=$('#busy'); b.textContent = txt||'กำลังอ่านโฟลเดอร์…'; b.classList.toggle('show', !!on); }
+function toast(msg){
+  const t=$('#toast'); t.textContent=msg; t.classList.add('show');
+  clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove('show'), 1400);
+}
+
+// from <input webkitdirectory>
+function fromInput(fileList){
+  const out=[];
+  for(const f of fileList){
+    if(!EXT.test(f.name)) continue;
+    out.push(rec(f, f.webkitRelativePath || f.name));
+  }
+  return out;
+}
+const rec = (f, path) => ({file:f, path, size:f.size, mtime:f.lastModified});
+
+// อ่านโฟลเดอร์จาก FileSystemDirectoryHandle (ได้ handle ไว้เขียนไฟล์กลับด้วย)
+async function fromDirHandle(dh, base){
+  const out = [];
+  for await (const [name, h] of dh.entries()){
+    if(h.kind === 'file'){
+      if(!EXT.test(name)) continue;
+      try{ out.push(rec(await h.getFile(), base + name)); }catch(e){ /* ข้ามไฟล์ที่เปิดไม่ได้ */ }
+    }else{
+      out.push(...await fromDirHandle(h, base + name + '/'));
+    }
+  }
+  return out;
+}
+
+// from drag&drop (walk directory entries)
+async function fromDrop(dt){
+  const list = [...dt.items];
+  // ต้องเรียกทั้งสองอันแบบ sync ก่อน await ไม่งั้น DataTransfer หมดอายุ
+  const handleP = list.map(it => it.getAsFileSystemHandle ? it.getAsFileSystemHandle().catch(()=>null) : null);
+  const roots = [];
+  for(const it of list){
+    const e = it.webkitGetAsEntry && it.webkitGetAsEntry();
+    if(e) roots.push(e);
+  }
+  // ถ้าลากมาโฟลเดอร์เดียวและเบราว์เซอร์ให้ handle มา -> ใช้ handle (เขียน index.html กลับได้)
+  const handles = (await Promise.all(handleP)).filter(h => h && h.kind === 'directory');
+  if(handles.length === 1){
+    dirHandle = handles[0]; rootPrefixed = false;
+    return fromDirHandle(dirHandle, '');
+  }
+  dirHandle = null; rootPrefixed = true;
+  if(!roots.length){ // fallback: plain files
+    return [...dt.files].filter(f=>EXT.test(f.name)).map(f=>rec(f, f.name));
+  }
+  const out=[];
+  const readDir = dr => new Promise(res=>{
+    const acc=[]; const step=()=>dr.readEntries(b=>{ if(!b.length) return res(acc); acc.push(...b); step(); }, ()=>res(acc));
+    step();
+  });
+  const walk = async (entry, base) => {
+    if(entry.isFile){
+      if(!EXT.test(entry.name)) return;
+      const f = await new Promise(r=>entry.file(r, ()=>r(null)));
+      if(f) out.push(rec(f, base + entry.name));
+    }else if(entry.isDirectory){
+      const kids = await readDir(entry.createReader());
+      for(const k of kids) await walk(k, base + entry.name + '/');
+    }
+  };
+  for(const r of roots) await walk(r, '');
+  return out;
+}
+
+/* ---------------- sorting ---------------- */
+function sortItems(list){
+  const m = $('#sort').value;
+  const dirOf = p => p.slice(0, p.lastIndexOf('/')+1);
+  const byName = (a,b) => coll.compare(dirOf(a.path), dirOf(b.path)) || coll.compare(a.path, b.path);
+  const cmp = {
+    'name':   byName,
+    'name-d': (a,b)=>-byName(a,b),
+    'mtime':  (a,b)=>(a.mtime-b.mtime) || byName(a,b),
+    'mtime-d':(a,b)=>(b.mtime-a.mtime) || byName(a,b),
+    'size':   (a,b)=>(a.size-b.size) || byName(a,b),
+  }[m] || byName;
+  list.sort(cmp);
+  return list;
+}
+
+/* ---------------- lazy load / unload ---------------- */
+// load when near viewport, free the object URL when far away (keeps memory flat on 1000+ images)
+const loadIO = new IntersectionObserver(es=>{
+  for(const e of es) if(e.isIntersecting) loadItem(+e.target.dataset.i);
+}, {rootMargin:'1800px 0px'});
+
+const keepIO = new IntersectionObserver(es=>{
+  for(const e of es) if(!e.isIntersecting) unloadItem(+e.target.dataset.i);
+}, {rootMargin:'4000px 0px'});
+
+const curIO = new IntersectionObserver(es=>{
+  for(const e of es) if(e.isIntersecting) setCur(+e.target.dataset.i);
+}, {rootMargin:'-45% 0px -45% 0px'});
+
+function loadItem(i){
+  const it = items[i]; if(!it || it.loaded) return;
+  it.loaded = true;
+  // โหมดปกติ = File object -> blob URL · โหมด standalone = path ตรง ๆ ข้าง ๆ ไฟล์ html
+  it.url = it.file ? URL.createObjectURL(it.file) : it.src;
+  const img = new Image();
+  img.decoding = 'async';
+  img.draggable = false;          // กันเบราว์เซอร์ลากภาพ (ชนกับการแพนด้วยเมาส์)
+  img.alt = it.name;
+  img.onload = () => {
+    const nw = img.naturalWidth, nh = img.naturalHeight;
+    it.ar = nw + '/' + nh; it.nw = nw; it.nh = nh;
+    // ตั้งไว้บน frame -> ความสูง/กว้างของ placeholder คงที่ทุกโหมดแม้ตอน unload ภาพทิ้ง
+    it.frame.style.aspectRatio = it.ar;
+    it.frame.style.setProperty('--nw', nw + 'px');
+    it.frame.style.setProperty('--nh', nh + 'px');
+    it.frame.style.setProperty('--ar', nw / nh);
+    it.frame.classList.add('done');
+    it.meta.textContent = nw + '×' + nh + (it.size ? ' · ' + fmtSize(it.size) : '');
+  };
+  img.onerror = () => {
+    it.frame.classList.add('err');
+    it.ph.textContent = '⚠ เปิดภาพไม่ได้';
+    it.frame.classList.remove('done');
+  };
+  img.src = it.url;
+  it.img = img;
+  it.frame.appendChild(img);
+}
+
+function unloadItem(i){
+  const it = items[i]; if(!it || !it.loaded) return;
+  if(!it.ar) return;                       // never measured yet -> keep, avoid height jump
+  it.loaded = false;
+  if(it.img){ it.img.remove(); it.img = null; }
+  if(it.url){ if(it.file) URL.revokeObjectURL(it.url); it.url = null; }
+}
+
+function fmtSize(n){
+  if(n < 1024) return n + ' B';
+  if(n < 1048576) return (n/1024).toFixed(0) + ' KB';
+  return (n/1048576).toFixed(1) + ' MB';
+}
+
+/* ---------------- render ---------------- */
+function setCur(i){
+  if(i === curIdx) return;
+  curIdx = i;
+  const it = items[i]; if(!it) return;
+  $('#now').textContent = (i+1) + ' / ' + items.length + ' · ' + it.path;
+  document.title = it.name + ' — ImgReader';
+  // ถ้าเลื่อนลงมาเจอภาพที่กว้างไม่เท่ากันจนภาพหลุดออกนอกจอด้านข้าง -> ดึงกลับเข้าจอ
+  const doc = document.documentElement;
+  const maxX = Math.max(0, doc.scrollWidth - window.innerWidth);
+  if(maxX > 0){
+    const r = it.el.getBoundingClientRect();
+    if(r.right < 40 || r.left > window.innerWidth - 40){
+      const x = r.left + window.scrollX;
+      const left = r.width > window.innerWidth ? x - 8 : x + r.width/2 - window.innerWidth/2;
+      window.scrollTo({left: Math.max(0, Math.min(maxX, left)), top: window.scrollY});
+    }
+  }
+  const rows = $('#side').querySelectorAll('.row');
+  rows.forEach(r => r.classList.toggle('cur', +r.dataset.i === i));
+  const cur = $('#side .row.cur');
+  if(cur && !document.body.classList.contains('noside')) cur.scrollIntoView({block:'nearest'});
+}
+
+function build(list){
+  // clean previous
+  for(let i=0;i<items.length;i++){ const it=items[i]; if(it.url && it.file) URL.revokeObjectURL(it.url); }
+  loadIO.disconnect(); keepIO.disconnect(); curIO.disconnect();
+  $('#list').innerHTML = ''; $('#side').innerHTML = '';
+  items = []; curIdx = -1;
+
+  const frag = document.createDocumentFragment();
+  const sfrag = document.createDocumentFragment();
+  let lastDir = null;
+
+  list.forEach((r, i) => {
+    const path = r.path.replace(/\\/g,'/');
+    const name = path.slice(path.lastIndexOf('/')+1);
+    const dir  = path.slice(0, path.lastIndexOf('/'));
+
+    const el = document.createElement('div');
+    el.className = 'item'; el.dataset.i = i; el.id = 'it' + i;
+
+    const frame = document.createElement('div');
+    frame.className = 'frame';
+    const ph = document.createElement('span');
+    ph.className = 'ph'; ph.textContent = '…';
+    frame.appendChild(ph);
+
+    const cap = document.createElement('div');
+    cap.className = 'cap';
+    const meta = document.createElement('span'); meta.className = 'meta';
+    cap.innerHTML = '<span class="n">' + (i+1) + '</span><span class="f"></span>';
+    cap.querySelector('.f').textContent = dir ? dir + '/' + name : name;
+    cap.appendChild(meta);
+    const cp = document.createElement('button');
+    cp.className = 'cp'; cp.title = 'คัดลอกชื่อไฟล์'; cp.textContent = '⧉';
+    cp.onclick = () => { navigator.clipboard.writeText(name).then(()=>toast('คัดลอก: ' + name), ()=>toast('คัดลอกไม่ได้')); };
+    cap.appendChild(cp);
+
+    el.appendChild(frame); el.appendChild(cap);
+    frag.appendChild(el);
+
+    // sidebar
+    if(dir !== lastDir){
+      lastDir = dir;
+      const g = document.createElement('div');
+      g.className = 'grp'; g.textContent = dir || '(โฟลเดอร์หลัก)';
+      sfrag.appendChild(g);
+    }
+    const row = document.createElement('div');
+    row.className = 'row'; row.dataset.i = i;
+    row.innerHTML = '<span class="n">' + (i+1) + '</span>';
+    row.appendChild(document.createTextNode(name));
+    row.onclick = () => goto(i);
+    sfrag.appendChild(row);
+
+    items.push({file:r.file||null, src:r.src||null, size:r.size||0, mtime:r.mtime||0,
+                path, name, dir, el, frame, ph, meta, img:null, url:null, ar:null, loaded:false});
+  });
+
+  $('#list').appendChild(frag);
+  $('#side').appendChild(sfrag);
+
+  for(const it of items){ loadIO.observe(it.el); keepIO.observe(it.el); curIO.observe(it.el); }
+
+  $('#drop').classList.remove('show');
+  setCur(0);
+  window.scrollTo(0,0);
+  checkH();
+}
+
+function goto(i){
+  i = Math.max(0, Math.min(items.length-1, i));
+  const it = items[i]; if(!it) return;
+  loadItem(i);
+  const r = it.el.getBoundingClientRect();
+  const top = r.top + window.scrollY - (document.body.classList.contains('hideui') ? 4 : 52);
+
+  // แนวนอน: ตอนซูม/สลับโหมด ต้องเลื่อนตามภาพด้วย ไม่งั้นภาพ "ไหลไปทางขวา" หลุดจอ
+  //   ภาพกว้างกว่าจอ -> ชิดขอบซ้ายของภาพ (อ่านเอกสารจากซ้ายไปขวา)
+  //   ภาพแคบกว่าจอ  -> จัดกึ่งกลางจอ
+  const doc = document.documentElement;
+  const maxX = Math.max(0, doc.scrollWidth - window.innerWidth);
+  let left = window.scrollX;
+  if(maxX > 0){
+    const x = r.left + window.scrollX;
+    left = r.width > window.innerWidth ? x - 8 : x + r.width/2 - window.innerWidth/2;
+    left = Math.max(0, Math.min(maxX, left));
+  }
+  window.scrollTo({top, left, behavior:'auto'});
+  setCur(i);
+  checkH();
+}
+
+// มี scroll แนวนอนไหม -> ใช้เปลี่ยนเคอร์เซอร์เป็นมือลาก
+function checkH(){
+  const on = document.documentElement.scrollWidth > window.innerWidth + 1;
+  document.body.classList.toggle('hscroll', on);
+  return on;
+}
+window.addEventListener('resize', () => { checkH(); });
+
+/* ---- ลากด้วยเมาส์เพื่อเลื่อนภาพที่ซูมจนกว้างเกินจอ ---- */
+let pan = null;
+$('#main').addEventListener('pointerdown', e => {
+  if(e.button !== 0 || !checkH()) return;
+  if(e.target.closest('.cap')) return;
+  pan = {x:e.clientX, y:e.clientY, sx:window.scrollX, sy:window.scrollY, id:e.pointerId, on:false};
+});
+window.addEventListener('pointermove', e => {
+  if(!pan || e.pointerId !== pan.id) return;
+  const dx = e.clientX - pan.x, dy = e.clientY - pan.y;
+  if(!pan.on){
+    if(Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
+    pan.on = true; document.body.classList.add('panning');
+  }
+  window.scrollTo({left: pan.sx - dx, top: pan.sy - dy});
+});
+const endPan = () => { if(pan) document.body.classList.remove('panning'); pan = null; };
+window.addEventListener('pointerup', endPan);
+window.addEventListener('pointercancel', endPan);
+
+/* ---------------- open ---------------- */
+let lastList = [];
+async function openList(list, label){
+  if(!list.length){ toast('ไม่พบไฟล์ภาพในโฟลเดอร์นี้'); busy(false); return; }
+  lastList = list;
+  busy(true, 'กำลังจัดเรียง ' + list.length + ' ภาพ…');
+  sortItems(list);
+  build(list);
+  busy(false);
+  toast((label ? label + ' · ' : '') + list.length + ' ภาพ');
+}
+
+$('#pick').addEventListener('change', async e => {
+  busy(true);
+  dirHandle = null; rootPrefixed = true;
+  const list = fromInput(e.target.files);
+  const root = e.target.files.length ? (e.target.files[0].webkitRelativePath||'').split('/')[0] : '';
+  await openList(list, root);
+  e.target.value = '';
+});
+
+// เปิดโฟลเดอร์: ขอ directory handle ก่อน (เขียน index.html กลับลงโฟลเดอร์นั้นได้เลย)
+// ถ้าเบราว์เซอร์ไม่รองรับบนหน้า file:// ค่อยตกไปใช้ <input webkitdirectory> แบบเดิม
+async function openFolder(){
+  if(window.showDirectoryPicker){
+    try{
+      const dh = await window.showDirectoryPicker({id:'imgreader', mode:'readwrite'});
+      busy(true, 'กำลังอ่านโฟลเดอร์ ' + dh.name + '…');
+      const list = await fromDirHandle(dh, '');
+      dirHandle = dh; rootPrefixed = false;
+      await openList(list, dh.name);
+      return;
+    }catch(err){
+      busy(false);
+      if(err && err.name === 'AbortError') return;      // ผู้ใช้กดยกเลิก
+      // ไม่รองรับ/ถูกบล็อก -> ใช้วิธีเดิม
+    }
+  }
+  $('#pick').click();
+}
+$('#bOpen').onclick = openFolder;
+$('#bPick').onclick = openFolder;
+
+window.addEventListener('dragover', e => { e.preventDefault(); $('#drop').classList.add('over'); });
+window.addEventListener('dragleave', e => { if(e.relatedTarget===null) $('#drop').classList.remove('over'); });
+window.addEventListener('drop', async e => {
+  e.preventDefault();
+  $('#drop').classList.remove('over');
+  busy(true);
+  try{ await openList(await fromDrop(e.dataTransfer)); }
+  catch(err){ busy(false); toast('อ่านโฟลเดอร์ไม่ได้: ' + err.message); }
+});
+
+/* ---------------- controls ---------------- */
+$('#w').addEventListener('input', e => {
+  CFG.zoom[CFG.mode] = +e.target.value;
+  applyCfg();
+});
+$('#w').addEventListener('change', () => { if(curIdx >= 0) goto(curIdx); });
+// ปุ่ม +/- ทีละ 10% (ปัดให้ลงตัวสิบเสมอ เช่น 55 -> 60 -> 70)
+const ZSTEP = 10;
+function stepZ(dir){
+  const z = zoom();
+  const next = dir > 0 ? (Math.floor(z/ZSTEP) + 1) * ZSTEP : (Math.ceil(z/ZSTEP) - 1) * ZSTEP;
+  CFG.zoom[CFG.mode] = clampZ(next);
+  reflow();
+}
+$('#bMinus').onclick = () => stepZ(-1);
+$('#bPlus').onclick  = () => stepZ(1);
+$('#bReset').onclick = () => { CFG.zoom[CFG.mode] = 100; reflow(); };
+
+/* ---------------- สร้างไฟล์ standalone ลงโฟลเดอร์ภาพ ---------------- */
+const encPath = p => p.split('/').map(encodeURIComponent).join('/');
+
+async function exportHtml(){
+  if(!items.length || !items[0].file){
+    toast('เปิดโฟลเดอร์ภาพก่อน แล้วค่อยกดสร้าง HTML');
+    return;
+  }
+  // path ที่ฝังต้อง relative จาก "ข้างในโฟลเดอร์นั้น"
+  //   directory handle -> path ไม่มีชื่อโฟลเดอร์รากอยู่แล้ว ใช้ตรง ๆ
+  //   input/drag       -> path ขึ้นต้นด้วยชื่อโฟลเดอร์ราก ต้องตัดทิ้ง
+  const root = items[0].path.split('/')[0];
+  const hasRoot = rootPrefixed &&
+    items.every(it => it.path.includes('/') && it.path.split('/')[0] === root);
+  const rel = p => hasRoot ? p.slice(root.length + 1) : p;
+
+  const data = items.map(it => [rel(it.path), it.size, it.mtime]);
+  const folder = dirHandle ? dirHandle.name : (hasRoot ? root : '');
+  // ต่อสตริงแบบแยกชิ้น: ห้ามให้ลำดับ "<script>" + marker ปรากฏตรง ๆ ในซอร์ส
+  // ไม่งั้น regex กันฝังซ้อนข้างบนจะไปแมตช์โค้ดตัวเอง แล้วตัดสคริปต์ขาดตอน export
+  const inject = '<scr' + 'ipt>/*IMGREADER' + '-DATA*/window.FILES=' + JSON.stringify(data) +
+                 ';window.FOLDER=' + JSON.stringify(folder) + ';<\/script>\n</head>';
+  const html = SELF_HTML.replace('</head>', inject);
+
+  // ทางหลัก: เขียนลงโฟลเดอร์ที่เปิดอยู่ตรง ๆ ไม่มีกล่องบันทึกให้หลงโฟลเดอร์
+  if(dirHandle){
+    if(!confirm('เขียนไฟล์ index.html (' + items.length + ' ภาพ) ลงในโฟลเดอร์\n\n    ' +
+                dirHandle.name + '\n\nถ้ามีไฟล์ index.html อยู่แล้วจะถูกเขียนทับ')) return;
+    try{
+      let p = await dirHandle.queryPermission({mode:'readwrite'});
+      if(p !== 'granted') p = await dirHandle.requestPermission({mode:'readwrite'});
+      if(p !== 'granted'){ toast('ไม่ได้รับสิทธิ์เขียนไฟล์ในโฟลเดอร์นี้'); return; }
+      const fh = await dirHandle.getFileHandle('index.html', {create:true});
+      const w = await fh.createWritable();
+      await w.write(html); await w.close();
+      alert('สร้าง index.html ในโฟลเดอร์ ' + dirHandle.name + ' เรียบร้อย\nดับเบิลคลิกไฟล์นั้นได้เลย');
+      return;
+    }catch(err){
+      toast('เขียนไฟล์ไม่ได้: ' + err.message);
+      return;
+    }
+  }
+
+  // สำรอง: ไม่มี handle (เปิดด้วย input/ลากไฟล์) -> ต้องเลือกที่เก็บเอง
+  const where = folder ? 'โฟลเดอร์  ' + folder : 'โฟลเดอร์ภาพ';
+  if(!confirm('สร้างไฟล์ index.html ของ ' + items.length + ' ภาพ\n\n' +
+              '⚠ ตอนนี้ยังไม่ได้สิทธิ์เขียนลงโฟลเดอร์โดยตรง จะต้องเลือกที่เก็บเอง\n' +
+              'ไฟล์ต้องไปอยู่ "ใน' + where + '" เท่านั้น (อ้างภาพแบบ relative path)\n' +
+              'และอย่าบันทึกทับ index.html ของตัว ImgReader เอง\n\n' +
+              'แนะนำ: ปิดหน้านี้แล้วกด 📂 เปิดโฟลเดอร์ใหม่ จะเขียนไฟล์ให้อัตโนมัติ')) return;
+  saveHtml(html, 'index.html', where);
+}
+
+async function saveHtml(html, name, where){
+  if(window.showSaveFilePicker){
+    try{
+      const h = await window.showSaveFilePicker({id:'imgreader', suggestedName:name,
+        types:[{description:'HTML', accept:{'text/html':['.html']}}]});
+      const w = await h.createWritable();
+      await w.write(html); await w.close();
+      toast('บันทึก ' + name + ' แล้ว');
+      return;
+    }catch(err){
+      if(err && err.name === 'AbortError') return;      // ผู้ใช้กดยกเลิก
+    }
+  }
+  const a = document.createElement('a');
+  const url = URL.createObjectURL(new Blob([html], {type:'text/html;charset=utf-8'}));
+  a.href = url; a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 8000);
+  alert('ดาวน์โหลด ' + name + ' แล้ว (อยู่ในโฟลเดอร์ Downloads)\n\nย้ายไฟล์นี้ไปไว้ใน' + where);
+}
+$('#bSave').onclick = exportHtml;
+$('#mode').addEventListener('change', e => { CFG.mode = e.target.value; reflow(); });
+$('#sort').addEventListener('change', () => { if(lastList.length) openList(lastList.slice()); });
+$('#bCap').onclick   = () => { CFG.cap = CFG.cap?0:1; reflow(); };
+$('#bSide').onclick  = () => { CFG.side = CFG.side?0:1; reflow(); };
+$('#bTheme').onclick = () => { CFG.theme = CFG.theme==='dark'?'light':'dark'; applyCfg(); };
+$('#bHide').onclick  = () => { document.body.classList.toggle('hideui'); reflow(); };
+
+document.addEventListener('keydown', e => {
+  if(e.ctrlKey || e.altKey || e.metaKey) return;
+  if(/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+  const k = e.key.toLowerCase();
+  if(k==='j' || k==='n'){ goto(curIdx+1); e.preventDefault(); }
+  else if(k==='k' || k==='p'){ goto(curIdx-1); e.preventDefault(); }
+  else if(k==='home'){ goto(0); e.preventDefault(); }
+  else if(k==='end'){ goto(items.length-1); e.preventDefault(); }
+  else if(k==='s'){ CFG.side = CFG.side?0:1; reflow(); }
+  else if(k==='c'){ CFG.cap = CFG.cap?0:1; reflow(); }
+  else if(k==='t'){ CFG.theme = CFG.theme==='dark'?'light':'dark'; applyCfg(); }
+  else if(k==='h'){ document.body.classList.toggle('hideui'); reflow(); }
+  else if(k==='f'){ document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen(); }
+  else if(k==='+' || k==='='){ stepZ(1); }
+  else if(k==='-' || k==='_'){ stepZ(-1); }
+  else if(k==='0'){ CFG.zoom[CFG.mode] = 100; reflow(); }
+  else if(k==='1' || k==='2' || k==='3'){ CFG.mode = MODES[+k-1]; reflow(); }
+  else if(k==='m'){ CFG.mode = MODES[(MODES.indexOf(CFG.mode)+1) % MODES.length]; reflow(); }
+  else if(k==='o'){ openFolder(); }
+});
+
+applyCfg();
+
+/* ---------------- เริ่มทำงาน ---------------- */
+if(STATIC){
+  // ไฟล์ที่สร้างไว้ในโฟลเดอร์ภาพ: อ่านรายชื่อจาก window.FILES ได้เลย ไม่ต้องเลือกโฟลเดอร์
+  $('#bSave').style.display = 'none';
+  openList(window.FILES.map(a => ({src:encPath(a[0]), path:a[0], size:a[1]||0, mtime:a[2]||0})),
+           window.FOLDER || '');
+}
+</script>
+</body>
+</html>
