@@ -149,6 +149,13 @@
   #drop h1{margin:0; font-size:22px; font-weight:700}
   #drop p{margin:0; color:var(--dim); line-height:1.7; max-width:560px}
   #drop.over{outline:3px dashed var(--accent); outline-offset:-18px}
+  #dsub{
+    display:inline-flex; align-items:center; gap:8px; cursor:pointer;
+    color:var(--fg); font-size:14px; padding:8px 14px; border-radius:8px;
+    border:1px solid var(--line); background:var(--panel);
+  }
+  #dsub:hover{border-color:var(--accent)}
+  #dsub input{width:16px; height:16px; accent-color:var(--accent); cursor:pointer}
   #drop .big{
     background:var(--accent); color:#fff; border:none; padding:11px 22px;
     font-size:15px; border-radius:8px;
@@ -228,9 +235,9 @@
   <h1>🖼️ ImgReader</h1>
   <p>อ่านภาพทั้งโฟลเดอร์แบบเลื่อนต่อเนื่องจากบนลงล่าง มีชื่อไฟล์คั่นระหว่างภาพ</p>
   <button class="big" id="bPick">📂 เลือกโฟลเดอร์</button>
+  <label id="dsub"><input type="checkbox" id="cSub"> รวมภาพในโฟลเดอร์ย่อยด้วย</label>
   <p>หรือ <b>ลากโฟลเดอร์ (หรือไฟล์ภาพ) มาวางตรงนี้</b> ก็ได้<br>
-  ปุ่ม <b>🗂️ ย่อย</b> บนแถบบน = เลือกว่าจะรวมภาพในโฟลเดอร์ย่อยด้วยหรือเอาแค่ชั้นบนสุด ·
-  jpg / png / gif / webp / avif / bmp<br>
+  jpg / png / gif / webp / avif / bmp — เปลี่ยนทีหลังได้จากปุ่ม <b>🗂️</b> บนแถบบน<br>
   เปิดแล้วกด <b>💾 สร้าง HTML</b> จะเขียนไฟล์ <b>index.html</b> ลงในโฟลเดอร์นั้นให้เลย
   ครั้งต่อไปดับเบิลคลิกไฟล์นั้นอ่านได้ทันที ไม่ต้องเลือกโฟลเดอร์อีก</p>
   <p style="font-size:12.5px">
@@ -322,6 +329,7 @@ function applyCfg(){
   $('#bSide').classList.toggle('on', !!CFG.side);
   $('#bSub').classList.toggle('on', !!CFG.sub);
   $('#bSub').textContent = CFG.sub ? '🗂️ ย่อย' : '📁 ชั้นเดียว';
+  $('#cSub').checked = !!CFG.sub;      // ช่องเลือกบนหน้าต้อนรับ (เห็นได้ก่อนเปิดโฟลเดอร์)
   save();
 }
 
@@ -682,6 +690,8 @@ function subBar(){
     : 'โฟลเดอร์นี้มีโฟลเดอร์ย่อยอีก ' + pendingDirs.length + ' อัน';
 }
 $('#bSubNo').onclick = () => { barDismissed = true; $('#subbar').classList.remove('show'); };
+// ติ๊กบนหน้าต้อนรับ = ค่าเดียวกับปุ่ม 🗂️ บนแถบบน (ยังไม่มีอะไรเปิดอยู่ จึงแค่จำค่า)
+$('#cSub').onchange = e => { CFG.sub = e.target.checked ? 1 : 0; applyCfg(); };
 $('#bSubGo').onclick = () => $('#bSub').click();
 
 $('#pick').addEventListener('change', async e => {
