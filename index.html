@@ -315,17 +315,20 @@ function reflow(){
 
 /* ---------------- collecting files ---------------- */
 function busy(on, txt){ const b=$('#busy'); b.textContent = txt||'กำลังอ่านโฟลเดอร์…'; b.classList.toggle('show', !!on); }
-function toast(msg){
+function toast(msg, ms){
   const t=$('#toast'); t.textContent=msg; t.classList.add('show');
-  clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove('show'), 1400);
+  clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove('show'), ms || 1400);
 }
 
 // from <input webkitdirectory>
-function fromInput(fileList){
+// ⚠ ทางนี้เบราว์เซอร์สแกนทั้งต้นไม้ให้ก่อนเสมอ (หยุดไม่ได้) deep จึงกันได้แค่ไม่สร้าง record เกิน
+function fromInput(fileList, deep){
   const out=[];
   for(const f of fileList){
     if(!EXT.test(f.name)) continue;
-    out.push(rec(f, f.webkitRelativePath || f.name));
+    const p = f.webkitRelativePath || f.name;
+    if(!deep && (p.match(/\//g) || []).length > 1) continue;
+    out.push(rec(f, p));
   }
   return out;
 }
@@ -365,7 +368,7 @@ async function fromDrop(dt){
     dirHandle = handles[0]; rootPrefixed = false; dropDeep = !!CFG.sub;
     return fromDirHandle(dirHandle, '', dropDeep);
   }
-  dirHandle = null; dropDeep = true;      // ทางนี้อ่านทั้งต้นไม้เสมอ แล้วค่อยกรองทีหลัง
+  dirHandle = null; dropDeep = !!CFG.sub;
   if(!roots.length){ // fallback: ลากไฟล์ภาพมาตรง ๆ (ไม่ใช่โฟลเดอร์)
     rootPrefixed = false;
     return [...dt.files].filter(f=>EXT.test(f.name)).map(f=>rec(f, f.name));
@@ -376,17 +379,19 @@ async function fromDrop(dt){
     const acc=[]; const step=()=>dr.readEntries(b=>{ if(!b.length) return res(acc); acc.push(...b); step(); }, ()=>res(acc));
     step();
   });
-  const walk = async (entry, base) => {
+  // level 0 = โฟลเดอร์ที่ลากมาเอง (ต้องเข้าไปเสมอ) · ลึกกว่านั้นเข้าเฉพาะตอนเปิด "รวมย่อย"
+  const walk = async (entry, base, level) => {
     if(entry.isFile){
       if(!EXT.test(entry.name)) return;
       const f = await new Promise(r=>entry.file(r, ()=>r(null)));
       if(f) out.push(rec(f, base + entry.name));
     }else if(entry.isDirectory){
+      if(level > 0 && !dropDeep) return;
       const kids = await readDir(entry.createReader());
-      for(const k of kids) await walk(k, base + entry.name + '/');
+      for(const k of kids) await walk(k, base + entry.name + '/', level + 1);
     }
   };
-  for(const r of roots) await walk(r, '');
+  for(const r of roots) await walk(r, '', 0);
   return out;
 }
 
@@ -643,10 +648,13 @@ function showList(){
 $('#pick').addEventListener('change', async e => {
   busy(true);
   dirHandle = null; rootPrefixed = true;
-  const list = fromInput(e.target.files);      // input คืนมาทั้งต้นไม้เสมอ -> deep = true
+  const deep = !!CFG.sub;
+  const list = fromInput(e.target.files, deep);
   const root = e.target.files.length ? (e.target.files[0].webkitRelativePath||'').split('/')[0] : '';
-  await openList(list, root, true);
+  await openList(list, root, deep);
   e.target.value = '';
+  if(!deep) toast('หมายเหตุ: โหมดสำรองนี้เบราว์เซอร์สแกนทั้งโฟลเดอร์เองก่อน จึงยังช้าอยู่ ' +
+                  '— เปิดผ่าน https://witchupang.github.io/imgreader/ จะข้ามโฟลเดอร์ย่อยได้จริง', 5000);
 });
 
 // สลับ "รวมโฟลเดอร์ย่อย" — ถ้าเปิดขึ้นมาแล้วของเดิมยังไม่ได้อ่านลึก ให้อ่านเพิ่มจาก handle
